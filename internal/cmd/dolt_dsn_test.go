@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -123,20 +124,37 @@ func TestBuildDoltDSNFromConfig(t *testing.T) {
 	}
 }
 
+func TestBuildDoltDSNFromConfig_RemoteHostPreserved(t *testing.T) {
+	withMockSocket(t, "/tmp/mysql.13306.sock")
+	cfg := &doltserver.Config{User: "alice", Host: "10.0.0.5", Port: 13306}
+	got := buildDoltDSNFromConfig(cfg, "hq", dsnOpts{ParseTime: true})
+	want := "alice@tcp(10.0.0.5:13306)/hq?parseTime=true"
+	if got != want {
+		t.Errorf("got\n  %s\nwant\n  %s", got, want)
+	}
+}
+
+func TestBuildDoltDSNFromConfig_LocalHostFallbackPreserved(t *testing.T) {
+	withNoSocket(t)
+	cfg := &doltserver.Config{User: "root", Host: "localhost", Port: 13306}
+	got := buildDoltDSNFromConfig(cfg, "hq", dsnOpts{})
+	want := "root@tcp(localhost:13306)/hq"
+	if got != want {
+		t.Errorf("got\n  %s\nwant\n  %s", got, want)
+	}
+}
+
 // TestLocalDoltSocketPath_RealSocket verifies the actual probe (not the
-// test mock) recognizes a live unix socket. Uses MkdirTemp under /tmp
-// to keep the path under macOS's 104-char sun_path limit.
+// test mock) recognizes a live unix socket.
 func TestLocalDoltSocketPath_RealSocket(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("unix domain sockets not supported on Windows")
 	}
 
-	tmpDir, err := os.MkdirTemp("/tmp", "wad6f")
-	if err != nil {
-		t.Fatalf("mkdir temp: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(tmpDir) })
-	sockPath := filepath.Join(tmpDir, "s.sock")
+	port := 20000 + os.Getpid()%10000
+	sockPath := fmt.Sprintf("/tmp/mysql.%d.sock", port)
+	_ = os.Remove(sockPath)
+	t.Cleanup(func() { _ = os.Remove(sockPath) })
 
 	listener, err := net.Listen("unix", sockPath)
 	if err != nil {
@@ -144,25 +162,35 @@ func TestLocalDoltSocketPath_RealSocket(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = listener.Close() })
 
-	// Restore the real probe and point its conventional default path at
-	// our test socket via a small helper substitution.
-	orig := localDoltSocketPath
-	localDoltSocketPath = func(int) string {
-		info, err := os.Stat(sockPath)
-		if err != nil {
-			return ""
-		}
-		if info.Mode()&os.ModeSocket == 0 {
-			return ""
-		}
-		return sockPath
-	}
-	t.Cleanup(func() { localDoltSocketPath = orig })
-
-	got := buildDoltDSN("root", 3307, "hq", dsnOpts{Timeout: "1s"})
+	got := buildDoltDSN("root", port, "hq", dsnOpts{Timeout: "1s"})
 	wantSubstr := "@unix(" + sockPath + ")/hq"
 	if !strings.Contains(got, wantSubstr) {
 		t.Errorf("got %q; expected to contain %q", got, wantSubstr)
+	}
+}
+
+func TestLocalDoltSocketPath_StaleSocketReturnsEmpty(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix domain sockets not supported on Windows")
+	}
+
+	port := 30000 + os.Getpid()%10000
+	sockPath := fmt.Sprintf("/tmp/mysql.%d.sock", port)
+	_ = os.Remove(sockPath)
+	t.Cleanup(func() { _ = os.Remove(sockPath) })
+
+	listener, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen unix: %v", err)
+	}
+	if err := listener.Close(); err != nil {
+		t.Fatalf("close listener: %v", err)
+	}
+
+	got := buildDoltDSN("root", port, "hq", dsnOpts{Timeout: "1s"})
+	wantSubstr := fmt.Sprintf("@tcp(127.0.0.1:%d)/hq", port)
+	if !strings.Contains(got, wantSubstr) {
+		t.Errorf("expected TCP fallback for stale socket, got %q", got)
 	}
 }
 
