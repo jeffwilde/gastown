@@ -452,6 +452,55 @@ func TestCreateAgentBead_UsesTownRootForCrossRigRoutes(t *testing.T) {
 	// Work bead status=hooked and assignee=<agent> is now the authoritative source.
 }
 
+func TestCreateAgentBead_ForcesCollapsedAgentID(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("path assertions are Unix-oriented")
+	}
+
+	townRoot, _ := filepath.EvalSymlinks(t.TempDir())
+	for _, dir := range []string{
+		filepath.Join(townRoot, "mayor"),
+		filepath.Join(townRoot, ".beads"),
+		filepath.Join(townRoot, "gitsurgeon", ".beads"),
+	} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(townRoot, "mayor", "town.json"), []byte(`{"name":"test"}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(townRoot, ".beads", "routes.jsonl"), []byte("{\"prefix\":\"gitsurgeon-\",\"path\":\"gitsurgeon\"}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	logPath := filepath.Join(townRoot, "bd.log")
+	installMockBDCreateRecorder(t, logPath)
+
+	rigDir := filepath.Join(townRoot, "gitsurgeon")
+	bd := NewWithBeadsDir(rigDir, filepath.Join(rigDir, ".beads"))
+
+	if _, err := bd.CreateAgentBead("gitsurgeon-witness", "witness", &AgentFields{
+		RoleType:   "witness",
+		Rig:        "gitsurgeon",
+		AgentState: "idle",
+	}); err != nil {
+		t.Fatalf("CreateAgentBead: %v", err)
+	}
+
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read mock bd log: %v", err)
+	}
+	logOutput := string(logData)
+	if !strings.Contains(logOutput, "create --json --id=gitsurgeon-witness") {
+		t.Fatalf("mock bd log missing collapsed agent create call:\n%s", logOutput)
+	}
+	if !strings.Contains(logOutput, "--force") {
+		t.Fatalf("collapsed agent IDs must be force-created:\n%s", logOutput)
+	}
+}
+
 func TestCreateAgentBead_ParsesMockCreateOutput(t *testing.T) {
 	raw := []byte(`{"id":"pt-imported-polecat-shiny","title":"shiny","status":"open"}`)
 	var issue Issue

@@ -228,7 +228,7 @@ func (b *Beads) CreateAgentBead(id, title string, fields *AgentFields) (*Issue, 
 			"--type=task",
 			"--labels=gt:agent",
 		}
-		if NeedsForceForID(id) {
+		if NeedsForceForID(id) || isAgentBeadByID(id) {
 			a = append(a, "--force")
 		}
 		// Default actor from BD_ACTOR env var for provenance tracking
